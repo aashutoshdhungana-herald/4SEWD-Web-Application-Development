@@ -2,7 +2,7 @@
 
 ### 4SEWD | Tutorial Week 3 Reference
 
-This README covers npm, React fundamentals, JSX, components, props, state, and side-effects — with syntax and examples for quick reference.
+This README covers npm, React fundamentals, JSX, components, props, state, side-effects, promises/async-await, and persisting data with localForage via a service layer — with syntax and examples for quick reference.
 
 ---
 
@@ -18,8 +18,10 @@ This README covers npm, React fundamentals, JSX, components, props, state, and s
 8. [State & Interactivity](#8-state--interactivity)
 9. [Keeping Components Pure](#9-keeping-components-pure)
 10. [Side Effects & useEffect](#10-side-effects--useeffect)
-11. [Form Handling](#11-form-handling)
-12. [Further Reading](#12-further-reading)
+11. [Promises & Async/Await](#11-promises--asyncawait)
+12. [Persisting Data: localForage & the Service Layer Pattern](#12-persisting-data-localforage--the-service-layer-pattern)
+13. [Form Handling](#13-form-handling)
+14. [Further Reading](#14-further-reading)
 
 ---
 
@@ -356,7 +358,202 @@ useEffect(() => {
 
 ---
 
-## 11. Form Handling
+## 11. Promises & Async/Await
+
+### What is a Promise?
+
+A **Promise** is an object representing the eventual result of an asynchronous operation. It's used for things like network requests, timers, or reading files — anything that doesn't finish instantly.
+
+A promise is always in one of three states:
+
+| State         | Meaning                              |
+| ------------- | ------------------------------------ |
+| **Pending**   | The operation hasn't finished yet    |
+| **Fulfilled** | The operation completed successfully |
+| **Rejected**  | The operation failed                 |
+
+### `.then()` / `.catch()` Syntax
+
+```js
+fetch("/api/tasks")
+  .then((response) => response.json())
+  .then((data) => console.log(data))
+  .catch((error) => console.error("Something went wrong:", error));
+```
+
+- `.then()` runs when the promise resolves (fulfills)
+- `.catch()` runs when the promise rejects
+- `.finally()` runs regardless of outcome (e.g. hiding a loading spinner)
+
+### `async` / `await` Syntax
+
+`async`/`await` is syntactic sugar built on top of promises — it lets you write asynchronous code that _reads_ like synchronous code.
+
+- Marking a function `async` means it always returns a promise
+- `await` pauses execution of that function until the promise settles, without blocking the rest of the app
+
+```js
+async function getTasks() {
+  try {
+    const response = await fetch("/api/tasks");
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error("Something went wrong:", error);
+  }
+}
+```
+
+- Wrap `await` calls in `try/catch` to handle rejected promises — this replaces `.catch()`
+- `await` can only be used inside a function marked `async`
+
+### Using Async Code Inside `useEffect`
+
+The function passed to `useEffect` **cannot be `async` itself** (React expects it to return either nothing or a cleanup function, not a promise). Define an async function inside the effect and call it immediately instead:
+
+```jsx
+import { useState, useEffect } from "react";
+
+function TaskList() {
+  const [tasks, setTasks] = useState([]);
+
+  useEffect(() => {
+    async function loadTasks() {
+      const data = await getTasks();
+      setTasks(data);
+    }
+
+    loadTasks();
+  }, []);
+
+  return (
+    <ul>
+      {tasks.map((task) => (
+        <li key={task.id}>{task.name}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+> **Tip:** If you need to cancel or ignore a stale request (e.g. the component unmounted before the fetch finished), track a boolean flag or use an `AbortController` and check it before calling `setState`.
+
+---
+
+## 12. Persisting Data: localForage & the Service Layer Pattern
+
+### What is localForage?
+
+**localForage** is an npm package that gives you simple, `Promise`-based, key-value storage in the browser. It behaves like `localStorage`, but:
+
+- Every method is **asynchronous** and returns a Promise (works great with `async`/`await`)
+- It can store more than just strings — objects, arrays, blobs, files — without manual `JSON.stringify`/`parse`
+- It automatically picks the best available storage under the hood (IndexedDB, WebSQL, then falls back to `localStorage`), so it's more reliable across browsers than `localStorage` alone
+
+```bash
+npm install localforage
+```
+
+```js
+import localforage from "localforage";
+
+// Save data
+await localforage.setItem("tasks", tasks);
+
+// Read data
+const tasks = await localforage.getItem("tasks");
+
+// Remove a single item
+await localforage.removeItem("tasks");
+
+// Wipe everything localForage is managing
+await localforage.clear();
+```
+
+### Why Separate Out a Service Layer?
+
+It's tempting to call `localforage.getItem(...)` / `setItem(...)` directly inside your components, but mixing storage logic into your UI components causes a few problems:
+
+- Components become harder to read — UI logic and persistence logic are tangled together
+- If you switch storage strategies later (e.g. localForage → a real backend API), you'd have to hunt through every component that touches storage
+- It's harder to test components in isolation when they depend directly on a storage implementation
+
+Instead, put all persistence logic in its own module — a **service layer** — and have components call that instead of talking to localForage directly.
+
+```js
+// src/services/taskService.js
+import localforage from "localforage";
+
+const STORAGE_KEY = "tasks";
+
+export async function getTasks() {
+  const tasks = await localforage.getItem(STORAGE_KEY);
+  return tasks ?? []; // default to an empty array if nothing is stored yet
+}
+
+export async function saveTasks(tasks) {
+  await localforage.setItem(STORAGE_KEY, tasks);
+}
+
+export async function addTask(task) {
+  const tasks = await getTasks();
+  const updated = [...tasks, task];
+  await saveTasks(updated);
+  return updated;
+}
+
+export async function deleteTask(taskId) {
+  const tasks = await getTasks();
+  const updated = tasks.filter((t) => t.id !== taskId);
+  await saveTasks(updated);
+  return updated;
+}
+```
+
+Components then import from the service instead of knowing anything about _how_ or _where_ the data is stored:
+
+```jsx
+import { useState, useEffect } from "react";
+import { getTasks, addTask } from "../services/taskService";
+
+function TaskApp() {
+  const [tasks, setTasks] = useState([]);
+
+  // Load persisted tasks once, on mount
+  useEffect(() => {
+    async function loadTasks() {
+      const storedTasks = await getTasks();
+      setTasks(storedTasks);
+    }
+
+    loadTasks();
+  }, []);
+
+  async function handleAddTask(newTask) {
+    const updatedTasks = await addTask(newTask);
+    setTasks(updatedTasks); // keep component state in sync with storage
+  }
+
+  return (
+    <ul>
+      {tasks.map((task) => (
+        <li key={task.id}>{task.name}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+**The pattern to remember:**
+
+1. **Service layer** (`taskService.js`) — knows _how_ to persist data (localForage today, maybe an API tomorrow). Exposes plain `async` functions like `getTasks`, `addTask`.
+2. **Component** (`TaskApp.jsx`) — doesn't know or care what storage is used. It just calls the service functions and updates its own state (`useState`) with the results so React can re-render.
+
+This keeps components focused purely on rendering UI, while all the "how do we save/load this" logic lives in one predictable place.
+
+---
+
+## 13. Form Handling
 
 React forms typically use **controlled inputs** — inputs whose values are driven by component state.
 
@@ -392,24 +589,34 @@ function NameForm() {
 
 ---
 
-## 12. Further Reading
+## 14. Further Reading
 
 - [W3Schools — React Tutorial](https://www.w3schools.com/react/default.asp)
 - [React Official Docs — react.dev/learn](https://react.dev/learn)
+- [MDN — Using Promises](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Using_promises)
+- [MDN — async function](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/async_function)
+- [localForage — GitHub / Docs](https://localforage.github.io/localForage/)
 
 ---
 
 ## Quick Reference Cheat Sheet
 
-| Concept                 | Syntax                                                             |
-| ----------------------- | ------------------------------------------------------------------ |
-| Create a Vite React app | `npm create vite@latest my-app -- --template react`                |
-| Install a package       | `npm install <package-name>`                                       |
-| Functional component    | `function MyComponent() { return <div>...</div>; }`                |
-| Import/use a component  | `<MyComponent />`                                                  |
-| Declare state           | `const [value, setValue] = useState(initialValue);`                |
-| Update state safely     | `setValue(prev => prev + 1);`                                      |
-| Run a side effect       | `useEffect(() => { ... }, [deps]);`                                |
-| Controlled input        | `<input value={state} onChange={e => setState(e.target.value)} />` |
-| Conditional rendering   | `{condition ? <A /> : <B />}`                                      |
-| Rendering a list        | `{items.map(item => <li key={item.id}>{item.name}</li>)}`          |
+| Concept                       | Syntax                                                                                  |
+| ----------------------------- | --------------------------------------------------------------------------------------- |
+| Create a Vite React app       | `npm create vite@latest my-app -- --template react`                                     |
+| Install a package             | `npm install <package-name>`                                                            |
+| Functional component          | `function MyComponent() { return <div>...</div>; }`                                     |
+| Import/use a component        | `<MyComponent />`                                                                       |
+| Declare state                 | `const [value, setValue] = useState(initialValue);`                                     |
+| Update state safely           | `setValue(prev => prev + 1);`                                                           |
+| Run a side effect             | `useEffect(() => { ... }, [deps]);`                                                     |
+| Controlled input              | `<input value={state} onChange={e => setState(e.target.value)} />`                      |
+| Conditional rendering         | `{condition ? <A /> : <B />}`                                                           |
+| Rendering a list              | `{items.map(item => <li key={item.id}>{item.name}</li>)}`                               |
+| Declare an async function     | `async function loadData() { ... }`                                                     |
+| Await a promise               | `const data = await fetch(url).then(r => r.json());`                                    |
+| Handle async errors           | `try { await doThing(); } catch (err) { ... }`                                          |
+| Async call inside `useEffect` | `useEffect(() => { async function run(){ ... } run(); }, []);`                          |
+| Save data with localForage    | `await localforage.setItem("key", value);`                                              |
+| Read data with localForage    | `const value = await localforage.getItem("key");`                                       |
+| Service layer function        | `export async function getTasks() { return await localforage.getItem("tasks") ?? []; }` |
