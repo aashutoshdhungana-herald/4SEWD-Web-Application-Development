@@ -354,7 +354,7 @@ You should see:
 Server is running on http://localhost:3000
 ```
 
-Test each route using a tool like **Postman**, **Insomnia**, or `curl`:
+Test each route using a tool like **Postman**, **Thuderclient**, or `curl`:
 
 | Method   | URL              | Body Example                                                            | Expected Result              |
 | -------- | ---------------- | ----------------------------------------------------------------------- | ---------------------------- |
