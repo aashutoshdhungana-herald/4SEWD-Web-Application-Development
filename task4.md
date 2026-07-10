@@ -13,6 +13,7 @@ You'll store todos in an **in-memory array** (no database), use **ES Modules** (
 - How to build a full REST API (Create, Read, Update, Delete)
 - How to work with the `req` and `res` objects in Express
 - How to write simple backend validation checks
+- How to write and register a custom Express middleware (e.g. for request logging)
 - How to use `nodemon` for a faster development workflow
 
 ---
@@ -118,6 +119,8 @@ todo-api
 │   └── todoController.js
 ├── routes/
 │   └── todoRoutes.js
+├── middleware/
+│   └── logger.js
 ├── server.js
 ├── package.json
 └── package-lock.json
@@ -126,6 +129,7 @@ todo-api
 - **`data/`** — holds the in-memory array acting as our "database"
 - **`controllers/`** — contains the actual logic for each route (reading the array, validating input, sending responses)
 - **`routes/`** — defines the URL paths and which controller function handles each one
+- **`middleware/`** — holds custom middleware functions, like our request logger
 - **`server.js`** — the entry point that wires everything together and starts the server
 
 This separation mirrors how larger, real-world Express apps are organized.
@@ -308,7 +312,44 @@ export default router;
 
 ---
 
-## Step 8: Wire Everything Together in `server.js`
+## Step 8: Build a Custom Logging Middleware
+
+Middleware functions in Express sit in the request/response pipeline and run **before** your route handlers. They're the standard way to add cross-cutting behavior — like logging, authentication, or error handling — without repeating code in every controller.
+
+A middleware function has the signature `(req, res, next)`. Calling `next()` passes control to the next middleware or route handler in the chain; forgetting to call it will leave the request hanging forever.
+
+Create `middleware/logger.js`:
+
+```js
+// middleware/logger.js
+
+// Logs the HTTP method, URL, and timestamp for every incoming request,
+// then measures how long the request took to complete.
+export function requestLogger(req, res, next) {
+  const start = Date.now();
+  const timestamp = new Date().toISOString();
+
+  console.log(`[${timestamp}] ${req.method} ${req.originalUrl}`);
+
+  // 'finish' fires once the response has been sent to the client
+  res.on("finish", () => {
+    const duration = Date.now() - start;
+    console.log(`  → ${res.statusCode} (${duration}ms)`);
+  });
+
+  next();
+}
+```
+
+A few things worth noting:
+
+- This is **application-level middleware** — it runs for every request, regardless of route, because we'll mount it before any routes are registered.
+- Logging happens on the way in (`console.log` before `next()`), and the response status/duration is logged on the way out, once the `finish` event fires on `res`.
+- Because it calls `next()` unconditionally, it never blocks a request — it just observes and forwards it.
+
+---
+
+## Step 9: Wire Everything Together in `server.js`
 
 This is the entry point. It creates the Express app, registers middleware, mounts the routes, and starts listening.
 
@@ -316,9 +357,13 @@ This is the entry point. It creates the Express app, registers middleware, mount
 // server.js
 import express from "express";
 import todoRoutes from "./routes/todoRoutes.js";
+import { requestLogger } from "./middleware/logger.js";
 
 const app = express();
 const PORT = 3000;
+
+// Custom logging middleware — runs first, for every incoming request
+app.use(requestLogger);
 
 // Middleware to parse JSON request bodies (built into Express — no extra library needed)
 app.use(express.json());
@@ -338,9 +383,11 @@ app.listen(PORT, () => {
 
 `req.body` only works because of the `express.json()` middleware — without it, Express won't parse incoming JSON, and `req.body` would be `undefined`.
 
+**Middleware order matters.** Express runs middleware in the order it's registered with `app.use()`. The logger is registered first so it captures _every_ request, even ones that fail JSON parsing or don't match any route. If you registered it after the catch-all, it would never run for unmatched routes.
+
 ---
 
-## Step 9: Test the Server
+## Step 10: Test the Server
 
 Start the server in development mode so it restarts automatically on changes:
 
@@ -352,6 +399,13 @@ You should see:
 
 ```text
 Server is running on http://localhost:3000
+```
+
+As you hit routes in the next step, watch the terminal — the logging middleware will print a line like this for every request:
+
+```text
+[2026-07-11T09:32:10.512Z] GET /api/todos
+  → 200 (3ms)
 ```
 
 Test each route using a tool like **Postman**, **Thuderclient**, or `curl`:
@@ -393,6 +447,14 @@ Improve the validation in `createTodo` and `updateTodo` so that:
 - `title` has a maximum length (e.g. 100 characters)
 - `deadline` cannot be a date in the past when creating a new todo
 
+### 5. Extend the logging middleware
+
+Enhance `middleware/logger.js` so it also:
+
+- Writes each log line to a file (e.g. `access.log`) using Node's `fs` module, in addition to `console.log`
+- Logs the request body for `POST` and `PUT` requests (useful for debugging validation errors)
+- Uses a different console color for error responses (status code `>= 400`) vs. successful ones
+
 ---
 
 ## Full Route Reference
@@ -419,6 +481,8 @@ todo-api
 │   └── todoController.js
 ├── routes/
 │   └── todoRoutes.js
+├── middleware/
+│   └── logger.js
 ├── server.js
 ├── package.json
 └── package-lock.json
