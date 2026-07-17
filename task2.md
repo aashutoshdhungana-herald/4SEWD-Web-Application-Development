@@ -1,4 +1,4 @@
-# Task 2 — Adding Validation with `express-validator`
+# Adding Validation with `express-validator`
 
 In Task 1 we split the To-Do app into a layered structure and put manual
 validation (`if (!title...)` checks) inside `services/todoService.js`.
