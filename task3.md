@@ -87,7 +87,7 @@ export const config = {
 ## 5. `src/config/database.js`
 
 This is the single Sequelize instance the whole app shares. Everything
-else — the model, the sync script — imports `sequelize` from here instead
+else, the model, the sync script also imports `sequelize` from here instead
 of creating its own connection.
 
 ```js
@@ -138,14 +138,14 @@ export const TodoItem = sequelize.define(
 ```
 
 `TodoItem` is now both the schema definition _and_ the query interface
-(`TodoItem.findAll()`, `TodoItem.create()`, etc.) — the rest of the app
+(`TodoItem.findAll()`, `TodoItem.create()`, etc.). The rest of the app
 only ever imports this one export.
 
 ---
 
 ## 7. `src/services/todoService.js`
 
-The service no longer touches an array — it delegates straight to the
+The service no longer touches an array. It delegates straight to the
 model, and every method becomes `async` because Sequelize queries return
 promises. Since Task 2 moved field validation into `express-validator`,
 there's no `ValidationError` handling left to carry over here either.
@@ -191,69 +191,44 @@ export const TodoService = {
 
 ## 8. Update `src/controllers/todoController.js`
 
-Every controller now `await`s the service call. `getAllTodos` and
-`getTodoById` need a `try/catch` now too, since a DB query can reject.
+Every controller now `await`s the service call.
 
 ```js
 import { TodoService } from "../services/todoService.js";
 
-export const getAllTodos = async (req, res, next) => {
-  try {
-    res.status(200).json(await TodoService.getAllTodos());
-  } catch (err) {
-    next(err);
-  }
+export const getAllTodos = async (req, res) => {
+  res.status(200).json(await TodoService.getAllTodos());
 };
 
-export const getTodoById = async (req, res, next) => {
-  try {
-    const todo = await TodoService.getTodoById(req.params.id);
-    if (!todo) {
-      return res.status(404).json({ error: "Todo item not found" });
-    }
-    res.status(200).json(todo);
-  } catch (err) {
-    next(err);
+export const getTodoById = async (req, res) => {
+  const todo = await TodoService.getTodoById(req.params.id);
+  if (!todo) {
+    return res.status(404).json({ error: "Todo item not found" });
   }
+  res.status(200).json(todo);
 };
 
-export const createTodo = async (req, res, next) => {
-  try {
-    const newTodo = await TodoService.createTodo(req.body);
-    res.status(201).json(newTodo);
-  } catch (err) {
-    next(err);
-  }
+export const createTodo = async (req, res) => {
+  const newTodo = await TodoService.createTodo(req.body);
+  res.status(201).json(newTodo);
 };
 
-export const updateTodo = async (req, res, next) => {
-  try {
-    const updated = await TodoService.updateTodo(req.params.id, req.body);
-    if (!updated) {
-      return res.status(404).json({ error: "Todo not found" });
-    }
-    res.status(200).json(updated);
-  } catch (err) {
-    next(err);
+export const updateTodo = async (req, res) => {
+  const updated = await TodoService.updateTodo(req.params.id, req.body);
+  if (!updated) {
+    return res.status(404).json({ error: "Todo not found" });
   }
+  res.status(200).json(updated);
 };
 
-export const deleteTodo = async (req, res, next) => {
-  try {
-    const deleted = await TodoService.deleteTodo(req.params.id);
-    if (!deleted) {
-      return res.status(404).json({ error: "Todo item not found" });
-    }
-    res.status(200).json({ message: "Todo deleted", todo: deleted });
-  } catch (err) {
-    next(err);
+export const deleteTodo = async (req, res) => {
+  const deleted = await TodoService.deleteTodo(req.params.id);
+  if (!deleted) {
+    return res.status(404).json({ error: "Todo item not found" });
   }
+  res.status(200).json({ message: "Todo deleted", todo: deleted });
 };
 ```
-
-`req.params.id` no longer needs `Number(...)` — the `idParamValidator` /
-`updateTodoValidator` chains from Task 2 already call `.toInt()`, so
-`req.params.id` arrives as a number.
 
 ---
 
@@ -261,7 +236,7 @@ export const deleteTodo = async (req, res, next) => {
 
 A small standalone script that creates (or updates) the SQLite tables to
 match the model definitions, then exits. This is deliberately **not**
-run automatically on every server start — you run it explicitly when
+run automatically on every server start. You run it explicitly when
 the schema changes.
 
 ```js
@@ -283,7 +258,7 @@ run();
 ```
 
 `{ alter: true }` updates existing tables to match the model instead of
-dropping and recreating them — safe to re-run as the schema evolves.
+dropping and recreating them making it safe to re-run as the schema evolves.
 
 ---
 
@@ -326,7 +301,7 @@ npm run db:sync   # creates database.sqlite with a `todos` table
 npm run dev
 ```
 
-Create a todo as before (`POST /api/todo`). It now survives a server
+Create a todo as before (`POST /api/todo`) — it now survives a server
 restart, since it's persisted in `database.sqlite` instead of an
 in-memory array.
 
