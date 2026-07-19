@@ -301,7 +301,7 @@ npm run db:sync   # creates database.sqlite with a `todos` table
 npm run dev
 ```
 
-Create a todo as before (`POST /api/todo`) — it now survives a server
+Create a todo as before (`POST /api/todo`). It now survives a server
 restart, since it's persisted in `database.sqlite` instead of an
 in-memory array.
 

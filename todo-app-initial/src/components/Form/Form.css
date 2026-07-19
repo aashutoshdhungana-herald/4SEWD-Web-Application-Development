@@ -1,0 +1,14 @@
+form {
+  text-align: left;
+  width: 20%;
+  margin: 0 auto;
+}
+
+input[type="text"],
+input[type="datetime-local"] {
+  width: 100%;
+}
+
+form div {
+  margin: 0.75rem 0;
+}

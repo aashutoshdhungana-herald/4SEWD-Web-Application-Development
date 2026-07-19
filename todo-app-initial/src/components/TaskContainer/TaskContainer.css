@@ -1,0 +1,8 @@
+.task-item {
+  list-style: none;
+}
+
+.urgent-task {
+  color: #d32f2f;
+  font-weight: bold;
+}
