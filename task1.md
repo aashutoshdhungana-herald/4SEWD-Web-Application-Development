@@ -1,6 +1,6 @@
 # Restructuring the To-Do App into a Layered Project
 
-This guide walks through splitting the single `index.js` file into a proper
+This guide walks through splitting the single `index.js` file from the starter-app into a proper
 layered structure:
 
 ```
