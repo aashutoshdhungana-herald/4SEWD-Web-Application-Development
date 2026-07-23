@@ -110,6 +110,16 @@ code {
   background: var(--code-bg);
 }
 
+nav {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+}
+
+a {
+  color: white;
+}
+
 .active-link {
   color: red;
 }
