@@ -1,437 +1,310 @@
-# Restructuring the To-Do App into a Layered Project
+# Adding Authentication: User Accounts, JWTs, and Protected Todo Routes
 
-This guide walks through splitting the single `index.js` file from the starter-app into a proper
-layered structure:
+Previously, the client and server were connected over a real HTTP API, with
+CORS, toasts, and loading states rounding out the UX. Right now, though,
+anyone can see and modify anyone else's todos, there's no concept of a
+"user" at all.
 
-```
-project/
-│
-├── src/
-│   ├── config/
-│   ├── controllers/
-│   ├── middleware/
-│   ├── models/
-│   ├── routes/
-│   ├── services/
-│   ├── app.js
-│   └── server.js
-│
-├── .env
-├── package.json
-└── README.md
-```
+In this task you add a `User` table, build `register`, `login`, and
+`logout` routes, issue and verify JWTs, and lock down the existing todo
+routes so a user can only view, edit, or delete their own tasks.
 
-**Layer responsibilities**
+You will learn:
 
-| Layer          | Responsibility                                                    |
-| -------------- | ----------------------------------------------------------------- |
-| `config/`      | Environment/config values (port, etc.)                            |
-| `models/`      | Data storage + id generation (in-memory "database")               |
-| `services/`    | Business logic that operates on models                            |
-| `controllers/` | Request/response handling — calls services, shapes HTTP responses |
-| `middleware/`  | Cross-cutting concerns — error handling (404, generic errors)     |
-| `routes/`      | Maps URLs + HTTP verbs to controller functions                    |
-| `app.js`       | Builds the Express app (middleware, routes) — no `listen()`       |
-| `server.js`    | Imports `app.js` and starts listening — the actual entry point    |
+| Piece                    | What it is                                                                                      |
+| ------------------------ | ----------------------------------------------------------------------------------------------- |
+| **`User` model**         | A Sequelize model storing credentials, with a `Todo.userId` foreign key linking tasks to owners |
+| **Password hashing**     | Using `bcrypt` so raw passwords are never stored                                                |
+| **JWT issuing**          | Signing a token on login that encodes the user's id as a claim                                  |
+| **JWT verification**     | Middleware that reads the token, verifies it, and attaches `req.userId`                         |
+| **`localStorage` token** | Storing the token client-side and attaching it as an `Authorization` header on every request    |
+| **Ownership checks**     | Comparing `todo.userId` to `req.userId` before allowing view/edit/delete                        |
 
 ---
 
-## 1. `.env`
+## 1. Install dependencies
 
-This file contains the environment variables. Environment variables are loaded by our application to configure the application. You put things like password, secret keys, db connection string here instead of hard coding them in code. .env file with actual secrets is not pushed to the github repository.
+```bash
+cd {yourFolder}/server
+npm install bcrypt jsonwebtoken
+```
 
-```env
-PORT=3000
+Add a JWT secret to your `.env` file:
+
+```
+JWT_SECRET=replace-with-a-long-random-string
 ```
 
 ---
 
-## 2. `src/config/index.js`
+## 2. Create the `User` model
+
+`src/models/User.js`:
 
 ```js
-import dotenv from "dotenv";
-dotenv.config();
+import { DataTypes } from "sequelize";
+import sequelize from "../db.js";
 
-export const config = {
-  port: process.env.PORT || 3000,
-};
-```
-
----
-
-## 3. `src/models/todoModel.js`
-
-Holds the raw in-memory data and the id generator. No
-Express-specific code lives here.
-
-```js
-const todoList = [];
-
-const createIdGenerator = (start = 1) => {
-  let counter = start;
-  return {
-    nextId: () => counter++,
-    currentId: () => counter,
-  };
-};
-
-const idGen = createIdGenerator();
-
-export const TodoModel = {
-  getAll: () => todoList,
-
-  getById: (id) => todoList.find((t) => t.id === id),
-
-  create: ({ title, deadline, isUrgent }) => {
-    const newTodo = {
-      id: idGen.nextId(),
-      title,
-      deadline,
-      isUrgent,
-    };
-    todoList.push(newTodo);
-    return newTodo;
+const User = sequelize.define("User", {
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true,
   },
+  username: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    unique: true,
+  },
+  passwordHash: {
+    type: DataTypes.STRING,
+    allowNull: false,
+  },
+});
 
-  findIndexById: (id) => todoList.findIndex((t) => t.id === id),
-
-  deleteByIndex: (idx) => todoList.splice(idx, 1)[0],
-};
+export default User;
 ```
 
----
+## 3. Link `Todo` to `User`
 
-## 4. `src/services/todoService.js`
-
-The todo service hold all the business logic related to the ToDo List item.
+Add a `userId` column to the `Todo` model, and wire up the association in
+the file currently defines your model relationships
+`src/models/index.js`:
 
 ```js
-import { TodoModel } from "../models/todoModel.js";
+import Todo from "./Todo.js";
+import User from "./User.js";
 
-export class ValidationError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "ValidationError";
-    this.statusCode = 400;
-  }
-}
+User.hasMany(Todo, { foreignKey: "userId" });
+Todo.belongsTo(User, { foreignKey: "userId" });
 
-const validateTitle = (title) => {
-  if (!title || typeof title !== "string" || title.trim() === "") {
-    throw new ValidationError("Title is required and must be non empty");
-  }
-};
+export { Todo, User };
+```
 
-const validateDeadline = (deadline) => {
-  if (!deadline || isNaN(Date.parse(deadline))) {
-    throw new ValidationError("Deadline is required and must be a valid date");
-  }
-};
+Re-run your sync script so the new table and column are created:
 
-const validateIsUrgent = (isUrgent) => {
-  if (typeof isUrgent !== "boolean") {
-    throw new ValidationError("isUrgent is required and must be true or false");
-  }
-};
-
-export const TodoService = {
-  getAllTodos: () => TodoModel.getAll(),
-
-  getTodoById: (id) => TodoModel.getById(id),
-
-  createTodo: (data) => {
-    validateTitle(data.title);
-    validateDeadline(data.deadline);
-    validateIsUrgent(data.isUrgent);
-
-    return TodoModel.create({
-      title: data.title,
-      deadline: data.deadline,
-      isUrgent: data.isUrgent,
-    });
-  },
-
-  updateTodo: (id, data) => {
-    const todo = TodoModel.getById(id);
-    if (!todo) return null;
-
-    if (data.title !== undefined) {
-      if (typeof data.title !== "string" || data.title.trim() === "") {
-        throw new ValidationError("Title must be a non-empty string");
-      }
-      todo.title = data.title.trim();
-    }
-
-    if (data.deadline !== undefined) {
-      if (isNaN(Date.parse(data.deadline))) {
-        throw new ValidationError("Deadline must be a valid date");
-      }
-      todo.deadline = data.deadline;
-    }
-
-    if (data.isUrgent !== undefined) {
-      if (typeof data.isUrgent !== "boolean") {
-        throw new ValidationError("isUrgent must be true or false");
-      }
-      todo.isUrgent = data.isUrgent;
-    }
-
-    return todo;
-  },
-
-  deleteTodo: (id) => {
-    const idx = TodoModel.findIndexById(id);
-    if (idx === -1) return null;
-    return TodoModel.deleteByIndex(idx);
-  },
-};
+```bash
+npm run db:sync
 ```
 
 ---
 
-## 5. `src/middleware/errorHandler.js`
+## 4. Add auth routes: register, login, logout
 
-A catch-all error handler and a 404 handler, so `app.js` stays clean.
-
-```js
-export const notFoundHandler = (req, res) => {
-  res.status(404).json({ error: "Route not found" });
-};
-
-export const errorHandler = (err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: "Internal server error" });
-};
-```
-
----
-
-## 6. `src/controllers/todoController.js`
-
-Controllers translate HTTP requests into service calls, and service
-results/errors into HTTP responses.
-
-```js
-import { TodoService, ValidationError } from "../services/todoService.js";
-
-export const getAllTodos = (req, res) => {
-  res.status(200).json(TodoService.getAllTodos());
-};
-
-export const getTodoById = (req, res) => {
-  const id = Number(req.params.id);
-  const todo = TodoService.getTodoById(id);
-
-  if (!todo) {
-    return res.status(404).json({ error: "Todo item not found" });
-  }
-
-  res.status(200).json(todo);
-};
-
-export const createTodo = (req, res, next) => {
-  try {
-    const newTodo = TodoService.createTodo(req.body);
-    res.status(201).json(newTodo);
-  } catch (err) {
-    if (err instanceof ValidationError) {
-      return res.status(err.statusCode).json({ error: err.message });
-    }
-    next(err);
-  }
-};
-
-export const updateTodo = (req, res, next) => {
-  try {
-    const id = Number(req.params.id);
-    const updated = TodoService.updateTodo(id, req.body);
-
-    if (!updated) {
-      return res.status(404).json({ error: "Todo not found" });
-    }
-
-    res.status(200).json(updated);
-  } catch (err) {
-    if (err instanceof ValidationError) {
-      return res.status(err.statusCode).json({ error: err.message });
-    }
-    next(err);
-  }
-};
-
-export const deleteTodo = (req, res) => {
-  const id = Number(req.params.id);
-  const deleted = TodoService.deleteTodo(id);
-
-  if (!deleted) {
-    return res.status(404).json({ error: "Todo item not found" });
-  }
-
-  res.status(200).json({ message: "Todo deleted", todo: deleted });
-};
-```
-
----
-
-## 7. `src/routes/todoRoutes.js`
-
-Routes map http verbs to
-controllers.
+`src/routes/authRoutes.js`:
 
 ```js
 import { Router } from "express";
-import {
-  getAllTodos,
-  getTodoById,
-  createTodo,
-  updateTodo,
-  deleteTodo,
-} from "../controllers/todoController.js";
+import { register, login, logout } from "../controllers/authController.js";
 
 const router = Router();
 
-router.get("/", getAllTodos);
-router.get("/:id", getTodoById);
-router.post("/", createTodo);
-router.put("/:id", updateTodo);
-router.delete("/:id", deleteTodo);
+router.post("/register", register);
+router.post("/login", login);
+router.post("/logout", logout);
 
 export default router;
 ```
 
----
-
-## 8. `src/app.js`
-
-Builds and configures the Express app, but does **not** start the server.
-This makes the app importable/testable (e.g. with `supertest`) without
-binding to a port.
+Mount it in `src/app.js` alongside your existing todo routes:
 
 ```js
-import express from "express";
-import todoRoutes from "./routes/todoRoutes.js";
-import { notFoundHandler, errorHandler } from "./middleware/errorHandler.js";
+import authRoutes from "./routes/authRoutes.js";
 
-const app = express();
-
-app.use(express.json());
-
-app.get("/", (req, res) => {
-  res.send("Welcome to my To-Do App Api");
-});
-
-app.use("/api/todo", todoRoutes);
-
-app.use(notFoundHandler);
-app.use(errorHandler);
-
-export default app;
+app.use("/api/auth", authRoutes);
 ```
 
----
+## 5. Implement the auth controller
 
-## 9. `src/server.js`
-
-The actual entry point — imports the configured app and starts listening.
+`src/controllers/authController.js`:
 
 ```js
-import app from "./app.js";
-import { config } from "./config/index.js";
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import User from "../models/User.js";
 
-app.listen(config.port, () => {
-  console.log(`App is listening on http://localhost:${config.port}`);
-});
+export async function register(req, res) {
+  const { username, password } = req.body;
+
+  if (!username || !password) {
+    return res
+      .status(400)
+      .json({ error: "Username and password are required" });
+  }
+
+  const existing = await User.findOne({ where: { username } });
+  if (existing) {
+    return res.status(409).json({ error: "Username already taken" });
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  const user = await User.create({ username, passwordHash });
+
+  const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, {
+    expiresIn: "1d",
+  });
+
+  res.status(201).json({ token, id: user.id, username: user.username });
+}
+
+export async function login(req, res) {
+  const { username, password } = req.body;
+
+  const user = await User.findOne({ where: { username } });
+  if (!user) {
+    return res.status(401).json({ error: "Invalid username or password" });
+  }
+
+  const valid = await bcrypt.compare(password, user.passwordHash);
+  if (!valid) {
+    return res.status(401).json({ error: "Invalid username or password" });
+  }
+
+  const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, {
+    expiresIn: "1d",
+  });
+
+  res.json({ token, id: user.id, username: user.username });
+}
 ```
+
+The server never sets a cookie here, it just hands the token back in the
+JSON body, and it's entirely up to the client to hold onto it and send it
+back on later requests.
 
 ---
 
-## 10. `package.json`
+## 6. Add JWT verification middleware
 
-```json
-{
-  "name": "todo-app",
-  "version": "1.0.0",
-  "type": "module",
-  "main": "src/server.js",
-  "scripts": {
-    "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
-  },
-  "dependencies": {
-    "express": "^4.19.2",
-    "dotenv": "^16.4.5"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.14"
+`src/middleware/requireAuth.js`:
+
+```js
+import jwt from "jsonwebtoken";
+
+export function requireAuth(req, res, next) {
+  const authHeader = req.headers.authorization; // "Bearer <token>"
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+
+  if (!token) {
+    return res.status(401).json({ error: "Not authenticated" });
+  }
+
+  try {
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
+    req.userId = payload.userId;
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: "Invalid or expired token" });
   }
 }
 ```
 
-> Note: `dotenv` is added as a new dependency to load `.env` in `config/index.js`.
-> Run `npm install` after adding it.
-
 ---
 
-## 11. `README.md`
+## 7. Protect the todo routes
 
-```markdown
-# To-Do App API
+Apply `requireAuth` to every todo route in `src/routes/todoRoutes.js`:
 
-A simple REST API for managing to-do items, built with Express.
+```js
+import { Router } from "express";
+import { requireAuth } from "../middleware/requireAuth.js";
+import {
+  getTasks,
+  getTaskById,
+  createTask,
+  updateTask,
+  deleteTask,
+} from "../controllers/todoController.js";
 
-## Project Structure
+const router = Router();
 
-- `src/config` – environment configuration
-- `src/models` – in-memory data store
-- `src/services` – business logic & validation
-- `src/controllers` – request/response handling
-- `src/middleware` – error handling (404, generic errors)
-- `src/routes` – route definitions
-- `src/app.js` – Express app setup
-- `src/server.js` – app entry point
+router.use(requireAuth);
 
-## Setup
+router.get("/", getTasks);
+router.get("/:id", getTaskById);
+router.post("/", createTask);
+router.put("/:id", updateTask);
+router.delete("/:id", deleteTask);
 
-\`\`\`bash
-npm install
-npm start
-\`\`\`
-
-The server runs on the port defined in `.env` (default `3000`).
-
-## Endpoints
-
-| Method | Route           | Description       |
-| ------ | --------------- | ----------------- |
-| GET    | `/api/todo`     | List all todos    |
-| GET    | `/api/todo/:id` | Get a single todo |
-| POST   | `/api/todo`     | Create a todo     |
-| PUT    | `/api/todo/:id` | Update a todo     |
-| DELETE | `/api/todo/:id` | Delete a todo     |
+export default router;
 ```
 
+## 8. Enforce ownership in the todo controller
+
+Every read/update/delete must confirm `todo.userId === req.userId` before
+acting, and every create must stamp the new row with the current user's id.
+
+```js
+import Todo from "../models/Todo.js";
+
+export async function getTasks(req, res) {
+  const tasks = await Todo.findAll({ where: { userId: req.userId } });
+  res.json(tasks);
+}
+
+export async function getTaskById(req, res) {
+  const task = await Todo.findByPk(req.params.id);
+
+  if (!task || task.userId !== req.userId) {
+    return res.status(404).json({ error: "Task not found" });
+  }
+
+  res.json(task);
+}
+
+export async function createTask(req, res) {
+  const { title, deadline, isUrgent } = req.body;
+  const task = await Todo.create({
+    title,
+    deadline,
+    isUrgent,
+    userId: req.userId,
+  });
+  res.status(201).json(task);
+}
+
+export async function updateTask(req, res) {
+  const task = await Todo.findByPk(req.params.id);
+
+  if (!task || task.userId !== req.userId) {
+    return res.status(404).json({ error: "Task not found" });
+  }
+
+  await task.update(req.body);
+  res.json(task);
+}
+
+export async function deleteTask(req, res) {
+  const task = await Todo.findByPk(req.params.id);
+
+  if (!task || task.userId !== req.userId) {
+    return res.status(404).json({ error: "Task not found" });
+  }
+
+  await task.destroy();
+  res.status(204).send();
+}
+```
+
+Returning `404` (rather than `403`) for a task that belongs to someone else
+avoids leaking whether a given id exists at all.
+
 ---
 
-1. Create the folder structure above under `src/`.
-2. Move the in-memory `todoList` array and `createIdGenerator` into
-   `models/todoModel.js`, exposing only data-access functions.
-3. Move update/delete logic (trimming titles, finding by id, etc.) into
-   `services/todoService.js`, which calls the model.
-4. Move the inline validation (`if (!title...)` blocks) into
-   `services/todoService.js` as well — these are domain rules about what
-   makes a valid to-do, so they live with the logic they protect.
-   Represent failures with a small `ValidationError` class (carrying a
-   `statusCode`) instead of directly writing an HTTP response.
-5. Rewrite each route handler as a thin controller function in
-   `controllers/todoController.js`. `createTodo`/`updateTodo` wrap their
-   service call in `try/catch`, turning a caught `ValidationError` into
-   a `400` response and forwarding anything else to `next(err)`.
-6. Wire routes in `routes/todoRoutes.js` — no validation middleware to
-   attach anymore, so routes simply map verbs to controllers.
-7. Assemble everything (routes, 404/generic-error handlers) in
-   `app.js` — but do not call `.listen()` there.
-8. Move `.listen()` and the config-loading into `server.js`, the new
-   entry point.
-9. Add `.env` and `config/index.js` for the port (and any future config).
-10. Update `package.json`'s `main`/`start` script to point to
-    `src/server.js`, and add `dotenv` as a dependency.
+## 10. Try it out
+
+```bash
+cd {workspace}/server
+npm install
+npm run db:sync
+npm run dev
+
+```
+
+- Register a new user using thunder client
+- Login with the same credentials
+- Copy the token and add a Authroization header to the api request
+  - Authrorization Bearer `<token>`
+- Send request to the authenticated routes
+
+---
