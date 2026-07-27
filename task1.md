@@ -11,14 +11,14 @@ routes so a user can only view, edit, or delete their own tasks.
 
 You will learn:
 
-| Piece                    | What it is                                                                                      |
-| ------------------------ | ----------------------------------------------------------------------------------------------- |
-| **`User` model**         | A Sequelize model storing credentials, with a `Todo.userId` foreign key linking tasks to owners |
-| **Password hashing**     | Using `bcrypt` so raw passwords are never stored                                                |
-| **JWT issuing**          | Signing a token on login that encodes the user's id as a claim                                  |
-| **JWT verification**     | Middleware that reads the token, verifies it, and attaches `req.userId`                         |
-| **`localStorage` token** | Storing the token client-side and attaching it as an `Authorization` header on every request    |
-| **Ownership checks**     | Comparing `todo.userId` to `req.userId` before allowing view/edit/delete                        |
+| Piece                    | What it is                                                                                                       |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| **`User` model**         | A Sequelize model storing credentials and profile info, with a `Todo.userId` foreign key linking tasks to owners |
+| **Password hashing**     | Using `bcrypt` so raw passwords are never stored                                                                 |
+| **JWT issuing**          | Signing a token on login that encodes the user's id and full name as claims                                      |
+| **JWT verification**     | Middleware that reads the token, verifies it, and attaches `req.userId` and `req.fullName`                       |
+| **`localStorage` token** | Storing the token client-side and attaching it as an `Authorization` header on every request                     |
+| **Ownership checks**     | Comparing `todo.userId` to `req.userId` before allowing view/edit/delete                                         |
 
 ---
 
@@ -51,6 +51,14 @@ const User = sequelize.define("User", {
     primaryKey: true,
     autoIncrement: true,
   },
+  firstName: {
+    type: DataTypes.STRING,
+    allowNull: false,
+  },
+  lastName: {
+    type: DataTypes.STRING,
+    allowNull: false,
+  },
   username: {
     type: DataTypes.STRING,
     allowNull: false,
@@ -81,7 +89,7 @@ Todo.belongsTo(User, { foreignKey: "userId" });
 export { Todo, User };
 ```
 
-Re-run your sync script so the new table and column are created:
+Re-run your sync script so the new table and columns are created:
 
 ```bash
 npm run db:sync
@@ -124,12 +132,12 @@ import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 
 export async function register(req, res) {
-  const { username, password } = req.body;
+  const { firstName, lastName, username, password } = req.body;
 
-  if (!username || !password) {
-    return res
-      .status(400)
-      .json({ error: "Username and password are required" });
+  if (!firstName || !lastName || !username || !password) {
+    return res.status(400).json({
+      error: "First name, last name, username, and password are required",
+    });
   }
 
   const existing = await User.findOne({ where: { username } });
@@ -138,13 +146,24 @@ export async function register(req, res) {
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
-  const user = await User.create({ username, passwordHash });
-
-  const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, {
-    expiresIn: "1d",
+  const user = await User.create({
+    firstName,
+    lastName,
+    username,
+    passwordHash,
   });
 
-  res.status(201).json({ token, id: user.id, username: user.username });
+  const fullName = `${user.firstName} ${user.lastName}`;
+
+  const token = jwt.sign(
+    { userId: user.id, fullName },
+    process.env.JWT_SECRET,
+    { expiresIn: "1d" },
+  );
+
+  res
+    .status(201)
+    .json({ token, id: user.id, username: user.username, fullName });
 }
 
 export async function login(req, res) {
@@ -160,15 +179,19 @@ export async function login(req, res) {
     return res.status(401).json({ error: "Invalid username or password" });
   }
 
-  const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, {
-    expiresIn: "1d",
-  });
+  const fullName = `${user.firstName} ${user.lastName}`;
 
-  res.json({ token, id: user.id, username: user.username });
+  const token = jwt.sign(
+    { userId: user.id, fullName },
+    process.env.JWT_SECRET,
+    { expiresIn: "1d" },
+  );
+
+  res.json({ token, id: user.id, username: user.username, fullName });
 }
 ```
 
-The server never sets a cookie here, it just hands the token back in the
+The server does not set a cookie here, it just hands the token back in the
 JSON body, and it's entirely up to the client to hold onto it and send it
 back on later requests.
 
@@ -192,6 +215,7 @@ export function requireAuth(req, res, next) {
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
     req.userId = payload.userId;
+    req.fullName = payload.fullName;
     next();
   } catch (err) {
     return res.status(401).json({ error: "Invalid or expired token" });
@@ -301,10 +325,11 @@ npm run dev
 
 ```
 
-- Register a new user using thunder client
+- Register a new user using thunder client, including `firstName` and `lastName` in the request body
 - Login with the same credentials
 - Copy the token and add a Authroization header to the api request
   - Authrorization Bearer `<token>`
 - Send request to the authenticated routes
+- Confirm the decoded token payload includes `fullName`
 
 ---
