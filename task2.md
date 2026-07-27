@@ -1,260 +1,446 @@
-# Adding Validation with `express-validator`
+# Wiring Up the Frontend: AuthContext, Login/Register Pages, and Protected Routes
 
-In Task 1 we split the To-Do app into a layered structure and put manual
-validation (`if (!title...)` checks) inside `services/todoService.js`.
+Task 1 built the server side of auth: a `User` table, `register` / `login`
+/ `logout` routes, JWT issuing and verification, and ownership checks on
+every todo route. Right now, though, the React client has no idea any of
+that exists. There's no login form, no way to store the token, and every
+call in `TaskService.js` will now fail with `401 Not authenticated`.
 
-In this task we move **request validation** out to the edge of the
-application using [`express-validator`](https://express-validator.github.io/docs/),
-so bad requests are rejected by middleware _before_ they ever reach a
-controller or service.
+In this task you build a small `apiRequest` helper, an `AuthContext` built
+on top of it, `Login` and `Register` pages, a `ProtectedRoute` guard, and
+you'll directly edit your existing `TaskService.js` and `App.jsx` so the
+whole app actually uses them.
 
-You will learn three new pieces:
+You will learn:
 
-| Piece                     | What it is                                                                                        |
-| ------------------------- | ------------------------------------------------------------------------------------------------- |
-| **Validation chain**      | A rule (or set of rules) attached to a field, e.g. `body("title").notEmpty()`                     |
-| **Validator array**       | An array of validation chains for one route, e.g. `createTodoValidator`                           |
-| **`validate` middleware** | A single reusable middleware that checks for validation errors and sends a uniform error response |
-
----
-
-## 0. Why not just validate in the service layer?
-
-The service-layer validation from Task 1 still works, but it has two problems:
-
-1. It runs _after_ Express has already parsed and handed you the request —
-   there's no standard, declarative way to describe "this field must be an
-   email" or "this must be an integer" without writing it by hand.
-2. Every service method needs its own hand-rolled `if` checks, and the
-   error format is whatever you happened to type that day.
-
-`express-validator` fixes both: you _declare_ the rules next to the route,
-and a single `validate` middleware turns any failures into one consistent
-JSON shape, for every route in your app.
+| Piece                   | What it is                                                                       |
+| ----------------------- | -------------------------------------------------------------------------------- |
+| **`apiRequest` helper** | One function all network calls (auth and todos alike) route through              |
+| **`AuthContext`**       | A Context + Provider exposing `user`, `token`, `login`, `register`, `logout`     |
+| **`useAuth` hook**      | A thin wrapper around `useContext(AuthContext)`                                  |
+| **Session restore**     | Reading a saved token from `localStorage` on app load, with an `isLoading` guard |
+| **`ProtectedRoute`**    | A wrapper component that redirects to `/login` if there's no logged-in user      |
+| **`TaskService.js`**    | Updated to send the JWT on every request instead of calling `fetch` on its own   |
+| **`App.jsx`**           | Updated to add `/login` and `/register` routes and protect the existing ones     |
 
 ---
 
-## 1. Install the package
+## 1. Build the shared `apiRequest` helper
 
-```bash
-npm install express-validator
-```
+Add this next to `TaskService.js`: it's the one function every network
+call in the app, auth or todo, will route through.
 
----
-
-## 2. Update the folder structure
-
-Add one new folder, `validators/`, and one new file inside `middleware/`:
-
-```
-src/
-│
-├── config/
-├── controllers/
-├── middleware/
-│   ├── errorHandler.js
-│   └── validate.js        ← NEW
-├── models/
-├── routes/
-├── services/
-├── validators/             ← NEW
-│   └── todoValidator.js    ← NEW
-├── app.js
-└── server.js
-```
-
----
-
-## 3. `src/middleware/validate.js`
-
-This is the **uniform error middleware**. It doesn't know anything about
-to-dos, it just looks at whatever validation chains ran before it, and if
-any of them failed, it responds with a consistent `400` shape. Every
-route in the app can reuse this same middleware.
+`src/api.js`:
 
 ```js
-import { validationResult } from "express-validator";
+const API_BASE = "http://localhost:3000/api";
 
-export const validate = (req, res, next) => {
-  const errors = validationResult(req);
+export async function apiRequest(path, { method = "GET", body, token } = {}) {
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
 
-  if (!errors.isEmpty()) {
-    return res.status(400).json({
-      error: "Validation failed",
-      details: errors.array().map((e) => ({
-        field: e.path,
-        message: e.msg,
-      })),
-    });
+  const response = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  if (response.status === 204) return null;
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || data.message || "Request failed");
   }
 
-  next();
-};
-```
-
-**Key idea:** `validate` is just a normal Express middleware. It must run
-_after_ the validation chains (so there's something in `req` for
-`validationResult` to inspect) and _before_ the controller.
-
----
-
-## 4. `src/validators/todoValidator.js`
-
-This file holds the **validator arrays** — one array of validation chains
-per route that needs validation. Each chain targets a field (`body`,
-`param`, `query`, etc.) and lists the rules it must satisfy.
-
-```js
-import { body, param } from "express-validator";
-
-export const createTodoValidator = [
-  body("title")
-    .trim()
-    .notEmpty()
-    .withMessage("Title is required")
-    .isString()
-    .withMessage("Title must be a string"),
-
-  body("deadline")
-    .notEmpty()
-    .withMessage("Deadline is required")
-    .isISO8601()
-    .withMessage("Deadline must be a valid date (YYYY-MM-DD)"),
-
-  body("isUrgent")
-    .isBoolean()
-    .withMessage("isUrgent is required and must be true or false"),
-];
-
-export const updateTodoValidator = [
-  param("id").isInt().withMessage("id must be an integer").toInt(),
-
-  body("title")
-    .optional()
-    .trim()
-    .notEmpty()
-    .withMessage("Title must be a non-empty string"),
-
-  body("deadline")
-    .optional()
-    .isISO8601()
-    .withMessage("Deadline must be a valid date (YYYY-MM-DD)"),
-
-  body("isUrgent")
-    .optional()
-    .isBoolean()
-    .withMessage("isUrgent must be true or false"),
-];
-
-export const idParamValidator = [
-  param("id").isInt().withMessage("id must be an integer").toInt(),
-];
-```
-
-A few things worth pointing out:
-
-- `.trim()` and `.toInt()` are **sanitizers**, they mutate the value in
-  place (e.g. converting `"5"` to the number `5`) so the controller
-  receives clean data.
-- `.optional()` on the `update` validators means "only validate this
-  field if it was actually sent", matches the partial-update behaviour
-  from Task 1's `updateTodo` service method.
-- `.withMessage(...)` attaches the message that ends up in the `validate`
-  middleware's `details` array.
-
----
-
-## 5. Wire the validators into the routes
-
-This is the pattern to teach: **`router.METHOD(path, validatorArray, validate, controller)`**.
-
-```js
-// src/routes/todoRoutes.js
-import { Router } from "express";
-import {
-  getAllTodos,
-  getTodoById,
-  createTodo,
-  updateTodo,
-  deleteTodo,
-} from "../controllers/todoController.js";
-import { validate } from "../middleware/validate.js";
-import {
-  createTodoValidator,
-  updateTodoValidator,
-  idParamValidator,
-} from "../validators/todoValidator.js";
-
-const router = Router();
-
-router.get("/", getAllTodos);
-router.get("/:id", idParamValidator, validate, getTodoById);
-router.post("/", createTodoValidator, validate, createTodo);
-router.put("/:id", updateTodoValidator, validate, updateTodo);
-router.delete("/:id", idParamValidator, validate, deleteTodo);
-
-export default router;
-```
-
-Notice the request never reaches `createTodo`/`updateTodo`/etc. unless it
-already passed every chain in the validator array — the controller and
-service can now trust that `req.body`/`req.params` are well-formed.
-
----
-
-## 6. Remove the custom validations in the services
-
-Delete `validateTitle`,
-`validateDeadline`, `validateIsUrgent`, and the `try/catch` for
-`ValidationError` in the controller, since invalid data can no longer
-reach `createTodo`/`updateTodo` in the service.
-
----
-
-## 7. Update `package.json`
-
-```json
-{
-  "dependencies": {
-    "express": "^4.19.2",
-    "dotenv": "^16.4.5",
-    "express-validator": "^7.2.0"
-  }
+  return data;
 }
 ```
+
+`token` is optional: `register` and `login` are called with no token
+(there's no session yet), while todo requests and `logout` pass one once
+`AuthContext` has it.
+
+---
+
+## 2. Create the `AuthContext`, built on top of `apiRequest`
+
+`src/context/AuthContext.jsx`:
+
+```jsx
+import { createContext, useContext, useEffect, useState } from "react";
+import { apiRequest } from "../api";
+
+const AuthContext = createContext(null);
+
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(null);
+  const [token, setToken] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // On first load, try to restore a session from localStorage.
+  useEffect(() => {
+    const savedToken = localStorage.getItem("token");
+    const savedUser = localStorage.getItem("user");
+
+    if (savedToken && savedUser) {
+      setToken(savedToken);
+      setUser(JSON.parse(savedUser));
+    }
+
+    setIsLoading(false);
+  }, []);
+
+  function persistSession(data) {
+    const loggedInUser = {
+      id: data.id,
+      username: data.username,
+      fullName: data.fullName,
+    };
+
+    localStorage.setItem("token", data.token);
+    localStorage.setItem("user", JSON.stringify(loggedInUser));
+
+    setToken(data.token);
+    setUser(loggedInUser);
+  }
+
+  async function register({ firstName, lastName, username, password }) {
+    const data = await apiRequest("/auth/register", {
+      method: "POST",
+      body: { firstName, lastName, username, password },
+    });
+
+    persistSession(data);
+  }
+
+  async function login({ username, password }) {
+    const data = await apiRequest("/auth/login", {
+      method: "POST",
+      body: { username, password },
+    });
+
+    persistSession(data);
+  }
+
+  async function logout() {
+    try {
+      await apiRequest("/auth/logout", { method: "POST", token });
+    } finally {
+      localStorage.removeItem("token");
+      localStorage.removeItem("user");
+      setToken(null);
+      setUser(null);
+    }
+  }
+
+  const value = { user, token, isLoading, register, login, logout };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth() {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error("useAuth must be used within an AuthProvider");
+  }
+  return context;
+}
+```
+
+`register`, `login`, and `logout` never touch `fetch`, headers, or JSON
+parsing directly, they describe _what_ request to make, and `apiRequest`
+handles _how_. `user` and `token` are cached in `localStorage` under
+separate keys so a page refresh can restore both without re-hitting the
+server; the `useEffect` above is what makes the session survive a refresh.
+
+---
+
+## 3. Update `TaskService.js` to send the JWT
+
+Replace your current `TaskService.js` with this version. It keeps the
+same exported function names and parameter order you already have:
+`createTask(title, deadline, isUrgent)` stays first-three-args the same,
+it just adds a `token` as the last argument to every function, and routes
+through `apiRequest` instead of calling `fetch` and `handleResponse`
+itself.
+
+`TaskService.js`:
+
+```js
+import { apiRequest } from "./api";
+
+export async function getTasks(token) {
+  return apiRequest("/todo", { token });
+}
+
+export async function getTaskById(id, token) {
+  return apiRequest(`/todo/${id}`, { token });
+}
+
+export async function updateTask(id, task, token) {
+  return apiRequest(`/todo/${id}`, {
+    method: "PUT",
+    body: task,
+    token,
+  });
+}
+
+export async function createTask(title, deadline, isUrgent, token) {
+  return apiRequest("/todo", {
+    method: "POST",
+    body: { title, deadline, isUrgent },
+    token,
+  });
+}
+
+export async function deleteTask(id, token) {
+  return apiRequest(`/todo/${id}`, { method: "DELETE", token });
+}
+```
+
+Every place that currently calls `getTasks()`, `createTask(...)`, etc.
+(likely inside `TaskContainer`, `AddTodo`, and `TodoDetail`) now needs a
+`token` argument. Pull it from `useAuth()` at the top of each of those
+components:
+
+```jsx
+import { useAuth } from "../context/AuthContext";
+import { getTasks } from "../TaskService";
+
+const { token } = useAuth();
+
+useEffect(() => {
+  getTasks(token).then(setTasks);
+}, [token]);
+```
+
+---
+
+## 4. Build a `ProtectedRoute` component
+
+`src/components/ProtectedRoute.jsx`:
+
+```jsx
+import { Navigate } from "react-router";
+import { useAuth } from "../context/AuthContext";
+
+export function ProtectedRoute({ children }) {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
+    return <p>Loading...</p>;
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return children;
+}
+```
+
+Checking `isLoading` first is what prevents an already-logged-in user from
+being bounced to `/login` for a split second while `AuthProvider` is still
+reading `localStorage` on page refresh.
+
+---
+
+## 5. Add `Login` and `Register` pages
+
+`src/pages/Login.jsx`:
+
+```jsx
+import { useState } from "react";
+import { useNavigate, Link } from "react-router";
+import { useAuth } from "../context/AuthContext";
+
+export default function Login() {
+  const { login } = useAuth();
+  const navigate = useNavigate();
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError(null);
+    try {
+      await login({ username, password });
+      navigate("/");
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <h2>Log In</h2>
+      {error && <p role="alert">{error}</p>}
+      <input
+        placeholder="Username"
+        value={username}
+        onChange={(e) => setUsername(e.target.value)}
+      />
+      <input
+        type="password"
+        placeholder="Password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+      />
+      <button type="submit">Log In</button>
+      <p>
+        No account? <Link to="/register">Register</Link>
+      </p>
+    </form>
+  );
+}
+```
+
+`src/pages/Register.jsx` follows the same shape, calling `register({
+firstName, lastName, username, password })` with extra `firstName` /
+`lastName` fields, then navigating to `"/"` on success
+
+---
+
+## 6. Update `App.jsx`
+
+Wrap the app in `AuthProvider`, add the `/login` and `/register` routes,
+and wrap the existing routes (`Home`, `AddTodo`, `TodoDetail`) in
+`ProtectedRoute` so they redirect to `/login` when there's no user.
+
+`App.jsx`:
+
+```jsx
+import PageTitle from "./components/PageTitle/PageTitle";
+import NavBar from "./components/NavBar/NavBar";
+import Home from "./pages/Home";
+import AddTodo from "./pages/AddTodo";
+import TodoDetail from "./pages/TodoDetail";
+import Login from "./pages/Login";
+import Register from "./pages/Register";
+import { BrowserRouter, Route, Routes } from "react-router";
+import { Toaster } from "react-hot-toast";
+import { AuthProvider } from "./context/AuthContext";
+import { ProtectedRoute } from "./components/ProtectedRoute";
+
+function App() {
+  return (
+    <>
+      <Toaster position="top-center" />
+      <PageTitle />
+      <BrowserRouter>
+        <AuthProvider>
+          <NavBar />
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
+            <Route
+              index
+              element={
+                <ProtectedRoute>
+                  <Home />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/todo/add"
+              element={
+                <ProtectedRoute>
+                  <AddTodo />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/todo/:id"
+              element={
+                <ProtectedRoute>
+                  <TodoDetail />
+                </ProtectedRoute>
+              }
+            />
+          </Routes>
+        </AuthProvider>
+      </BrowserRouter>
+    </>
+  );
+}
+
+export default App;
+```
+
+A few things changed from your original `App.jsx`:
+
+- `AuthProvider` now sits inside `BrowserRouter`, wrapping everything that
+  needs `useAuth()` (including `NavBar`, since it'll show the logged-in
+  user next).
+- `Login` and `Register` are added as public routes, outside
+  `ProtectedRoute`.
+- `Home`, `AddTodo`, and `TodoDetail` are each wrapped in `ProtectedRoute`
+  so an unauthenticated visitor gets redirected to `/login` instead of
+  hitting a `401` from the API.
+
+---
+
+## 7. Update `NavBar` to show the user and a logout button
+
+In your existing `NavBar` component, pull in `useAuth()` and add a welcome
+message plus a logout button:
+
+```jsx
+import { useAuth } from "../../context/AuthContext";
+import { useNavigate } from "react-router";
+
+// inside your NavBar component:
+const { user, logout } = useAuth();
+const navigate = useNavigate();
+
+async function handleLogout() {
+  await logout();
+  navigate("/login");
+}
+
+// in the JSX, alongside your existing nav links:
+{
+  user && (
+    <>
+      <span>Welcome, {user.fullName}</span>
+      <button onClick={handleLogout}>Log Out</button>
+    </>
+  );
+}
+```
+
+Adjust the import path (`../../context/AuthContext`) to match where
+`NavBar.jsx` actually lives relative to `src/context/`.
 
 ---
 
 ## 8. Try it out
 
-Start the server, then send a bad request as follows from postman/thunderclient:
-
-```json
-{
-  "title": "",
-  "deadline": "not-a-date"
-}
+```bash
+cd {yourFolder}/server
+npm run dev
 ```
 
-Expected response (uniform shape, from `validate`):
-
-```json
-{
-  "error": "Validation failed",
-  "details": [
-    { "field": "title", "message": "Title is required" },
-    {
-      "field": "deadline",
-      "message": "Deadline must be a valid date (YYYY-MM-DD)"
-    },
-    {
-      "field": "isUrgent",
-      "message": "isUrgent is required and must be true or false"
-    }
-  ]
-}
+```bash
+cd {yourFolder}/client
+npm run dev
 ```
 
-Then send a valid request and confirm it still creates a todo as before.
+- Visit `/register`, create an account with `firstName`, `lastName`,
+  `username`, and `password`
+- Confirm you land on the home page and see "Welcome, `<fullName>`" in
+  the nav
+- Refresh the page — confirm you're still logged in (no flash of the
+  login page)
+- Click **Log Out** — confirm you're redirected to `/login`
+- Try visiting `/`, `/todo/add`, or `/todo/:id` directly while logged out
+  — confirm each redirects to `/login` instead of showing a broken or
+  `401`-erroring page
+- Open dev tools → Application → Local Storage, and confirm `token` and
+  `user` are present after login and removed after logout
+- Create a second account and confirm it only ever sees its own todos,
+  never the first account's
 
 ---
