@@ -66,7 +66,8 @@ Then create the real `client/.env` locally (not committed) with the same two var
   ```json
   "scripts": {
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+    "dev": "nodemon src/server.js",
+    "postinstall": "npm rebuild sqlite3 --build-from-source"
   }
   ```
 
