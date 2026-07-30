@@ -2,6 +2,8 @@
 
 ## Task Details & Hands-On Exercises
 
+_A Beginner's Course to GitHub Copilot — No prior AI-tooling experience required_
+
 ---
 
 ## 1. Setting Up Your Environment
@@ -9,7 +11,7 @@
 ### 1.1 Prerequisites
 
 - Visual Studio Code (latest stable release) installed.
-- A GitHub account. A free account is enough to start, Copilot's free tier includes a limited number of monthly chat and agent requests, and unlimited basic code completions for individuals.
+- A GitHub account. A free account is enough to start — Copilot's free tier includes a limited number of monthly chat and agent requests, and unlimited basic code completions for individuals.
 - Git installed locally, if you plan to work with real repositories.
 
 ### 1.2 Installing the GitHub Copilot extension
@@ -31,7 +33,7 @@
 
 ## 2. Using Inline Code Suggestions
 
-- Keep typing normally, suggestions appear automatically.
+- Keep typing normally — suggestions appear automatically.
 - Press **Tab** to accept a full suggestion.
 - Press **Ctrl+Right Arrow** (`Cmd+Right Arrow` on Mac) to accept just the next word.
 - Press **Esc** to dismiss a suggestion you don't want.
@@ -90,47 +92,12 @@ Create a file at:
 and describe your team's conventions. Copilot reads this automatically for every chat and agent request in that workspace. Example:
 
 ```markdown
-# Copilot Instructions
+# Code Style
 
-## Client (`client/src/`) — React
-
-- `assets/` – images, fonts, static CSS
-- `components/` – reusable UI, no API calls, no routing logic
-- `context/` – global state via Context + Provider
-- `hooks/` – custom hooks; call `services/`, used by `pages/`
-- `pages/` – route-level screens; compose `components/` + `hooks/`
-- `routes/` – route definitions & guards only
-- `services/` – all API calls (axios/fetch), no React code
-- `utils/` – pure helper functions only
-- `App.jsx` – providers + router mount only
-- `main.jsx` – ReactDOM render only
-
-**Flow:** `main.jsx -> App.jsx -> routes -> pages -> components`
-`pages` use `hooks` -> `hooks` use `services` (API) and `context` (state).
-`components` never call `services` directly.
-
-## Server (`server/src/`) — Express
-
-- `config/` – DB connection, env setup
-- `controllers/` – parse req/res, call services (thin, no DB logic)
-- `middleware/` – auth, error handler, validation
-- `models/` – schemas + model-level logic only
-- `routes/` – map endpoint -> controller, no logic
-- `services/` – business logic + DB queries (framework-agnostic, no req/res)
-- `app.js` – middleware + routes setup
-- `server.js` – connects DB, starts server (`app.listen`)
-
-**Flow:** `server.js -> app.js -> routes -> middleware -> controllers -> services -> models -> DB`
-Controllers never touch the DB directly. Services never import `req`/`res`.
-
-## Rules
-
-1. New feature = scaffold across all layers (model -> service -> controller -> route on
-   server; service -> hook -> component -> page on client).
-2. Keep files single-responsibility; no "God files."
-3. Reuse existing utils/hooks/services before creating new ones.
-4. All errors flow to a central `errorHandler` middleware via `next(err)`.
-5. No secrets/config values hardcoded — use `.env` / `config/`.
+- Always use TypeScript strict mode
+- Prefer functional patterns over class-based ones
+- All new functions must have unit tests
+- No direct database access in controllers
 ```
 
 ---
